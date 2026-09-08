@@ -88,14 +88,32 @@ class PlaylistEvent(ListEventBase):
     )
     SIZES = [32, 60, 80, 88]
 
-    def __init__(self, id: EventEnum, data: bytes) -> None:
+    def __init__(self, id: EventEnum, data: bytes, version: int | None = None) -> None:
         n = len(data)
-        # Prefer the 60-byte reading on a 60/80 common multiple so files that
-        # parsed before stay unaffected (#205). 88 never shares a small multiple
-        # with 60 (lcm = 1320), so 88-byte records are unambiguous in practice.
-        fl26 = n % 88 == 0 and n % 60 != 0
-        fl2025 = (n % 80 == 0 and n % 60 != 0) and not fl26
-        new = fl2025 or fl26 or not n % 60
+        if version is not None:
+            # Version-gated layout detection. ProjectID.FLVersion is the first
+            # event in the chunk, so the parser knows the FL major version
+            # before any PlaylistEvent arrives. This is REQUIRED because 80- and
+            # 88-byte records share multiples (e.g. 17600 = 220*80 = 200*88), so
+            # payload-length divisibility alone cannot separate an FL 2024/2025
+            # save (80B) from an FL 26 save (88B) — guessing by divisibility
+            # silently drops clips from FL 2024/2025 projects.
+            # Record growth: FL21 added _u3 (60B), FL 2024/25 added _u4 (80B),
+            # FL26 added _u5 ON TOP of _u4 (88B = 32+28+20+8), so fl26 implies
+            # fl2025/new are also true.
+            new = version >= 21
+            fl2025 = version >= 24
+            fl26 = version >= 26
+        else:
+            # Legacy divisibility heuristic (used when no version is known,
+            # e.g. tests constructing PlaylistEvent directly). Prefer the
+            # 60-byte reading on a 60/80 common multiple so files that parsed
+            # before stay unaffected (#205); prefer 80 over 88 on 80/88 common
+            # multiples (88's _u5 tail only exists in FL26, and an 80/88
+            # ambiguous payload is far more likely an FL 2024/2025 project).
+            fl26 = n % 88 == 0 and n % 80 != 0 and n % 60 != 0
+            fl2025 = (n % 80 == 0 and n % 60 != 0) and not fl26
+            new = fl2025 or fl26 or not n % 60
         super().__init__(id, data, new=new, fl2025=fl2025, fl26=fl26)
 
 

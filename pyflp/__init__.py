@@ -57,6 +57,7 @@ from pyflp._events import (
 from pyflp.exceptions import HeaderCorrupted, VersionNotDetected
 from pyflp.plugin import PluginID, get_event_by_internal_name
 from pyflp.project import VALID_PPQS, FileFormat, Project, ProjectID
+from pyflp.arrangement import PlaylistEvent
 
 __all__ = ["parse", "save"]
 
@@ -117,6 +118,7 @@ def parse(file: pathlib.Path | str) -> Project:
 
     plug_name = None
     str_type: type[AsciiEvent] | type[UnicodeEvent] | None = None
+    fl_version: int | None = None  # FL major version, set by the first event (FLVersion)
     stream.seek(22)  # Back to start of events
     while stream.tell() < file_size:
         event_type: type[AnyEvent] | None = None
@@ -127,8 +129,13 @@ def parse(file: pathlib.Path | str) -> Project:
         elif id < DWORD:
             value = stream.read(2)
         elif id < TEXT:
-            if id == EventEnum(0xAC):
-                # FL26+: event 0xAC (DWORD+44) is varint-length, not fixed 4 bytes
+            if id == EventEnum(0xAC) and fl_version is not None and fl_version >= 26:
+                # FL26+: event 0xAC (DWORD+44) is varint-length, not fixed 4
+                # bytes. Gated on FLVersion >= 26: FL 2024/2025 also contain
+                # 0xAC but always as a fixed 4-byte DWORD (verified upstream on
+                # a 34-file FL 25.2.5 corpus — reading those as varint derails
+                # the stream). ProjectID.FLVersion is always the first event,
+                # so fl_version is set before any 0xAC can arrive.
                 size = c.VarInt.parse_stream(stream)
                 value = stream.read(size)
             else:
@@ -143,6 +150,10 @@ def parse(file: pathlib.Path | str) -> Project:
                 str_type = UnicodeEvent
             else:
                 str_type = AsciiEvent
+            try:
+                fl_version = int(parts[0])
+            except (ValueError, IndexError):
+                fl_version = None
 
         for enum_ in EventEnum.__subclasses__():
             if id in enum_:
@@ -172,7 +183,14 @@ def parse(file: pathlib.Path | str) -> Project:
                 event_type = UnknownDataEvent
 
         try:
-            events.append(event_type(id, value))
+            if event_type is PlaylistEvent:
+                # FLVersion is the first event, so fl_version is known here;
+                # pass it so 80B (FL 2024/25) vs 88B (FL26) records are picked
+                # by version instead of payload divisibility (they share
+                # multiples: 17600 = 220*80 = 200*88).
+                events.append(event_type(id, value, version=fl_version))
+            else:
+                events.append(event_type(id, value))
         except Exception:
             # FL24+/26 can carry events PyFLP misinterprets as text; degrade
             # gracefully instead of aborting the whole parse.
