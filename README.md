@@ -1,5 +1,28 @@
 # PyFLP
 
+## BilliumMoto fork improvements
+
+Built on [Meowrium's fork](https://github.com/Meowrium/PyFLP) of
+[demberto/PyFLP](https://github.com/demberto/PyFLP), retaining its FL 2024+/26 fixes.
+
+- Recognizes VST payload marker `12`, observed in FL Studio 26.1.4, and validates
+  full markers and subevent framing to avoid silently accepting truncated data.
+- Fixes VST flag setters, including inverted flags, while preserving unrelated bits.
+- Fixes `fast_idle` and MIDI field writes so they preserve sibling fields and opaque data.
+
+Tested locally on Python 3.10.11: 110 tests passed; all 22 captured VST payloads
+round-tripped byte-for-byte. Python 3.11+ compatibility and full Patcher parsing
+remain planned. The project parser still falls back to opaque events on decoding
+errors; these changes do not establish complete support for every modern FL file.
+
+Install this fork:
+
+```sh
+python -m pip install "pyflp @ git+https://github.com/BilliumMoto/PyFLP.git@main"
+```
+
+The upstream documentation and badges below describe the original project.
+
 PyFLP is an unofficial parser for [FL Studio](https://www.image-line.com/fl-studio/)
 project and preset files written in Python.
 
@@ -308,7 +331,7 @@ implemented. Click on a link to go to the documentation for that feature.
 </table>
 <!-- markdownlint-restore -->
 
-> ## ⚠️ This is a maintained fork
+> ## Inherited improvements from Meowrium
 >
 > Upstream [`demberto/PyFLP`](https://github.com/demberto/PyFLP) has been
 > unmaintained since mid-2023 and **cannot parse project files saved by
@@ -329,7 +352,7 @@ implemented. Click on a link to go to the documentation for that feature.
 >   `supports_slice` and `PluginID.InternalName`, and unparseable events
 >   degrade to `UnknownDataEvent` instead of aborting the whole parse.
 >
-> Install from this fork:
+> Install Meowrium's base fork (without the BilliumMoto improvements above):
 >
 > ```none
 > python -m pip install git+https://github.com/Meowrium/PyFLP.git
@@ -337,7 +360,9 @@ implemented. Click on a link to go to the documentation for that feature.
 
 ## ⏬ Installation
 
-CPython 3.8+ / PyPy 3.8+ required.
+The upstream release documents CPython 3.8+ / PyPy 3.8+ support. For this fork,
+see the tested version and installation command at the top of this README.
+The command below installs the upstream PyPI release:
 
 ```none
 python -m pip install -U pyflp
