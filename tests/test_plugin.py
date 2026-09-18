@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import struct
 import unittest
 import warnings
@@ -7,6 +8,7 @@ from typing import TypeVar
 
 import construct as c
 
+from pyflp._events import EventTree, IndexedEvent
 
 from pyflp.plugin import (
     AnyPlugin,
@@ -178,6 +180,17 @@ def _vst_chunk(id, payload):
     return struct.pack("<IQ", id, len(payload)) + payload
 
 
+def _vst_model(flags=0, flags2=0, fast_idle=False):
+    flag_data = (
+        b"opaque123" + struct.pack("<II", flags, flags2) + b"extra" + bytes([fast_idle]) + b"tail"
+    )
+    midi_data = struct.pack("<iiI", 6, 9, 36) + b"midi-extra"
+    raw = struct.pack("<I", 12) + _vst_chunk(2, flag_data) + _vst_chunk(1, midi_data)
+    event = VSTPluginEvent(PluginID.Data, raw)
+    model = VSTPlugin(EventTree(init=[IndexedEvent(0, event)]))
+    return model, event, raw
+
+
 class VSTPayloadTests(unittest.TestCase):
     def test_known_markers_and_opaque_subevents_round_trip(self):
         for marker in (8, 10, 12):
@@ -214,3 +227,76 @@ class VSTPayloadTests(unittest.TestCase):
         for raw in malformed:
             with self.subTest(raw=raw), self.assertRaises(c.ConstructError):
                 VSTPluginEvent(PluginID.Data, raw)
+
+
+class VSTPropertyWriteTests(unittest.TestCase):
+    def test_flag_setters_preserve_other_bits_and_serialized_fields(self):
+        cases = [
+            ("compatibility", "fixed_buffers", 0, 1 << 1, False),
+            ("compatibility", "buffers_maxsize", 1, 1 << 1, False),
+            ("compatibility", "reset_on_transport", 0, 1 << 25, True),
+        ]
+        for group, prop, word, mask, inverted in cases:
+            for enabled in (True, False):
+                with self.subTest(prop=prop, enabled=enabled):
+                    initial = [0xFFFFFFFF, 0xFFFFFFFF] if not (enabled ^ inverted) else [0, 0]
+                    # Include an undocumented bit even when starting disabled.
+                    initial[word] |= 1 << 4
+                    model, event, raw = _vst_model(*initial)
+                    setattr(getattr(model, group), prop, enabled)
+                    self.assertIs(getattr(getattr(model, group), prop), enabled)
+                    expected = bytearray(raw)
+                    offset = 4 + 12 + 9 + word * 4
+                    result = initial[word] | mask if enabled ^ inverted else initial[word] & ~mask
+                    struct.pack_into("<I", expected, offset, result)
+                    self.assertEqual(event.STRUCT.build(event.value), bytes(expected))
+
+    def test_fast_idle_updates_only_its_byte(self):
+        for enabled in (True, False):
+            model, event, raw = _vst_model(0xABCDEF01, 0xFEDCBA98, not enabled)
+            self.assertIs(model.compatibility.fast_idle, not enabled)
+            model.compatibility.fast_idle = enabled
+            self.assertIs(model.compatibility.fast_idle, enabled)
+            expected = bytearray(raw)
+            expected[4 + 12 + 22] = enabled
+            self.assertEqual(event.STRUCT.build(event.value), bytes(expected))
+
+    def test_midi_field_write_preserves_siblings(self):
+        model, event, raw = _vst_model()
+        model.midi.input = -1
+        self.assertEqual((model.midi.input, model.midi.output, model.midi.pb_range), (-1, 9, 36))
+        expected = raw.replace(struct.pack("<iiI", 6, 9, 36), struct.pack("<iiI", -1, 9, 36))
+        self.assertEqual(event.STRUCT.build(event.value), expected)
+
+    def test_scalar_subevent_write_still_works(self):
+        event = VSTPluginEvent(PluginID.Data, struct.pack("<I", 12) + _vst_chunk(54, b"Old"))
+        model = VSTPlugin(EventTree(init=[IndexedEvent(0, event)]))
+        model.name = "New"
+        self.assertEqual(
+            event.STRUCT.build(event.value), struct.pack("<I", 12) + _vst_chunk(54, b"New")
+        )
+
+    def test_boolean_properties_reject_non_booleans_without_mutation(self):
+        for prop in ("fast_idle", "fixed_buffers"):
+            for invalid in (0, 1, None, "yes"):
+                model, event, raw = _vst_model()
+                with self.subTest(prop=prop, invalid=invalid), self.assertRaises(TypeError):
+                    setattr(model.compatibility, prop, invalid)
+                self.assertEqual(event.STRUCT.build(event.value), raw)
+
+    def test_absent_subevent_raises_on_write(self):
+        event = VSTPluginEvent(PluginID.Data, struct.pack("<I", 12))
+        model = VSTPlugin(EventTree(init=[IndexedEvent(0, event)]))
+        for prop in ("fast_idle", "fixed_buffers"):
+            with self.subTest(prop=prop), self.assertRaises(AttributeError):
+                setattr(model.compatibility, prop, True)
+
+    def test_absent_optional_field_raises_without_mutation(self):
+        for size, prop in ((9, "fixed_buffers"), (17, "fast_idle")):
+            raw = struct.pack("<I", 12) + _vst_chunk(2, bytes(size))
+            event = VSTPluginEvent(PluginID.Data, raw)
+            model = VSTPlugin(EventTree(init=[IndexedEvent(0, event)]))
+            before = copy.deepcopy(event.value)
+            with self.subTest(prop=prop), self.assertRaises(AttributeError):
+                setattr(model.compatibility, prop, True)
+            self.assertEqual(event.value, before)

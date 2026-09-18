@@ -479,8 +479,18 @@ class _VSTPluginProp(RWProperty[T], NamedPropMixin):
     def _set(self, event: VSTPluginEvent, value: T) -> None:
         for e in event["events"]:
             if e["id"] == self._id:
-                e["data"] = value
-                break
+                if isinstance(e["data"], (str, bytes)):
+                    e["data"] = value
+                else:
+                    # Structured subevents share storage across several properties.
+                    # Updating fast_idle or a MIDI field must preserve its siblings.
+                    if self._prop not in e["data"] or e["data"][self._prop] is None:
+                        raise AttributeError(self._prop)
+                    if self._prop == "fast_idle" and type(value) is not bool:
+                        raise TypeError("fast_idle must be a bool")
+                    e["data"][self._prop] = value
+                return
+        raise AttributeError(self._id)
 
 
 class _VSTFlagProp(_VSTPluginProp[bool]):
@@ -496,16 +506,22 @@ class _VSTFlagProp(_VSTPluginProp[bool]):
         return retbool if not self._inverted else not retbool
 
     def _set(self, event: VSTPluginEvent, value: bool) -> None:
+        if type(value) is not bool:
+            raise TypeError("VST flag value must be a bool")
         if self._inverted:
             value = not value
 
         for e in event["events"]:
             if e["id"] == self._id:
-                if value:
-                    e["data"][self._prop] |= value
-                else:
-                    e["data"][self._prop] &= ~value
-                break
+                flags = e["data"][self._prop]
+                if flags is None:
+                    raise AttributeError(self._prop)
+                # Use integer masks so unknown bits survive IntFlag inversion.
+                mask = int(self._flag)
+                updated = int(flags) | mask if value else int(flags) & ~mask
+                e["data"][self._prop] = type(flags)(updated)
+                return
+        raise AttributeError(self._id)
 
 
 class PluginIOInfo(EventModel):
