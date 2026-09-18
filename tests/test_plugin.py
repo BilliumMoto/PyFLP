@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import struct
+import unittest
+import warnings
 from typing import TypeVar
+
+import construct as c
+
 
 from pyflp.plugin import (
     AnyPlugin,
@@ -17,6 +23,7 @@ from pyflp.plugin import (
     PluginID,
     Soundgoodizer,
     VSTPlugin,
+    VSTPluginEvent,
     WrapperPage,
 )
 
@@ -164,3 +171,46 @@ def test_fruity_wrapper():
     assert not wrapper.ui.always_update
     assert wrapper.ui.dpi_aware
     assert not wrapper.ui.scale_editor
+
+
+# Synthetic wrapper payloads avoid distributing third-party plugin state.
+def _vst_chunk(id, payload):
+    return struct.pack("<IQ", id, len(payload)) + payload
+
+
+class VSTPayloadTests(unittest.TestCase):
+    def test_known_markers_and_opaque_subevents_round_trip(self):
+        for marker in (8, 10, 12):
+            raw = (
+                struct.pack("<I", marker)
+                + _vst_chunk(54, b"Synthetic VST")
+                + _vst_chunk(999, b"\xff\x00opaque")
+            )
+            with self.subTest(marker=marker), warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                event = VSTPluginEvent(PluginID.Data, raw)
+                self.assertEqual(event.STRUCT.build(event.value), raw)
+                self.assertEqual(event["events"][0]["data"], "Synthetic VST")
+                self.assertFalse(caught)
+
+    def test_unknown_full_marker_warns_even_if_low_byte_is_known(self):
+        raw = struct.pack("<I", 0x10C)
+        with self.assertWarnsRegex(RuntimeWarning, "Unknown marker 268"):
+            event = VSTPluginEvent(PluginID.Data, raw)
+        self.assertEqual(event.STRUCT.build(event.value), raw)
+
+    def test_truncated_headers_and_subevents_are_rejected(self):
+        marker = struct.pack("<I", 12)
+        malformed = [
+            b"",
+            b"\x0c",
+            b"\x0c\0",
+            b"\x0c\0\0",
+            marker + b"\0",
+            marker + struct.pack("<I", 54),
+            marker + struct.pack("<IQ", 54, 20) + b"short",
+            marker + _vst_chunk(54, b"valid") + b"trailing",
+        ]
+        for raw in malformed:
+            with self.subTest(raw=raw), self.assertRaises(c.ConstructError):
+                VSTPluginEvent(PluginID.Data, raw)

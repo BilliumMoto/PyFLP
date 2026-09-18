@@ -285,7 +285,7 @@ class VSTPluginEvent(StructEventBase):
     ).compile()
 
     STRUCT = c.Struct(
-        "type" / c.Int32ul,  # * 8 or 10 for VSTs, but I am not forcing it
+        "type" / c.Int32ul,  # Wrapper payload marker; distinct from the FL event ID.
         "events"
         / c.GreedyRange(
             c.Struct(
@@ -310,12 +310,18 @@ class VSTPluginEvent(StructEventBase):
                 ),
             ),
         ),
+        # GreedyRange stops at a malformed subevent; never accept a parsed prefix
+        # and silently discard the rest of the plugin state when rebuilding it.
+        c.Terminated,
     ).compile()
 
     def __init__(self, id: Any, data: bytearray) -> None:
-        if data[0] not in (8, 10):
+        marker = c.Int32ul.parse(data[:4])
+        # Marker 12 uses the same framing in observed FL 26.1.4 payloads.
+        # Its meaning and first supporting FL version remain unverified.
+        if marker not in (8, 10, 12):
             warnings.warn(
-                f"VSTPluginEvent: Unknown marker {data[0]} detected. "
+                f"VSTPluginEvent: Unknown marker {marker} detected. "
                 "Open an issue at https://github.com/demberto/PyFLP/issues "
                 "if you are seeing this!",
                 RuntimeWarning,
