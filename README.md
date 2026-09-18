@@ -1,6 +1,6 @@
 # PyFLP
 
-## BilliumMoto fork improvements
+## BilliumMoto Fork Improvements
 
 Built on [Meowrium's fork](https://github.com/Meowrium/PyFLP) of
 [demberto/PyFLP](https://github.com/demberto/PyFLP), retaining its FL 2024+/26 fixes.
@@ -10,18 +10,13 @@ Built on [Meowrium's fork](https://github.com/Meowrium/PyFLP) of
 - Fixes VST flag setters, including inverted flags, while preserving unrelated bits.
 - Fixes `fast_idle` and MIDI field writes so they preserve sibling fields and opaque data.
 
-Tested locally on Python 3.10.11: 110 tests passed; all 22 captured VST payloads
-round-tripped byte-for-byte. Python 3.11+ compatibility and full Patcher parsing
-remain planned. The project parser still falls back to opaque events on decoding
-errors; these changes do not establish complete support for every modern FL file.
-
 Install this fork:
 
 ```sh
 python -m pip install "pyflp @ git+https://github.com/BilliumMoto/PyFLP.git@main"
 ```
 
-The upstream documentation and badges below describe the original project.
+## Original README Below
 
 PyFLP is an unofficial parser for [FL Studio](https://www.image-line.com/fl-studio/)
 project and preset files written in Python.
