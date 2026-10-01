@@ -31,14 +31,17 @@ from pyflp._events import (
     WORD,
     BoolEvent,
     EventEnum,
+    EventTree,
     F32Event,
     I8Event,
     I32Event,
+    IndexedEvent,
     StructEventBase,
     U8Event,
     U16Event,
     U16TupleEvent,
     U32Event,
+    UnicodeEvent,
 )
 from pyflp._models import EventModel, ItemModel, ModelCollection, ModelReprMixin, supports_slice
 from pyflp.exceptions import ModelNotFound, NoModelsFound, PropertyCannotBeSet
@@ -377,6 +380,51 @@ class ChannelID(EventEnum):
 @enum.unique
 class DisplayGroupID(EventEnum):
     Name = TEXT + 39  #: 3.4.0+
+    Container = DATA + 32
+    """Observed in some FL 26 projects instead of top-level :attr:`Name` events.
+
+    Its payload is a nested event stream holding the :attr:`Name` events
+    (followed by a DWORD event of unknown meaning). Kept as opaque bytes.
+    """
+
+
+def _nested_group_names(data: bytes) -> list[bytes] | None:
+    """Raw :attr:`DisplayGroupID.Name` payloads nested in a container event.
+
+    Returns None if the nested stream isn't framed exactly as expected.
+    """
+    names: list[bytes] = []
+    pos = 0
+    while pos < len(data):
+        id = data[pos]
+        pos += 1
+        if id == DWORD + 44:  # Framing depends on the FL version (see parse())
+            return None
+
+        if id < WORD:
+            size = 1
+        elif id < DWORD:
+            size = 2
+        elif id < TEXT:
+            size = 4
+        else:
+            size = shift = 0
+            while True:  # VarInt length
+                if pos >= len(data) or shift > 28:
+                    return None
+                byte = data[pos]
+                pos += 1
+                size |= (byte & 0x7F) << shift
+                shift += 7
+                if not byte & 0x80:
+                    break
+
+        if pos + size > len(data):
+            return None
+        if id == DisplayGroupID.Name:
+            names.append(data[pos : pos + size])
+        pos += size
+    return names
 
 
 @enum.unique
@@ -1560,7 +1608,7 @@ class ChannelRack(EventModel, ModelCollection[Channel]):
     def __iter__(self) -> Iterator[Channel]:
         """Yields all the channels found in the project."""
         ch_dict: dict[int, Channel] = {}
-        groups = [DisplayGroup(et) for et in self.events.separate(DisplayGroupID.Name)]
+        groups = list(self.groups)
 
         for et in self.events.divide(ChannelID.New, *ChannelID, *PluginID):
             iid = et.first(ChannelID.New).value
@@ -1612,8 +1660,32 @@ class ChannelRack(EventModel, ModelCollection[Channel]):
 
     @property
     def groups(self) -> Iterator[DisplayGroup]:
+        """Display groups, from top-level name events or else a container.
+
+        Groups read from a :attr:`DisplayGroupID.Container` are detached
+        copies; changing them doesn't modify the project.
+        """
+        found = False
         for ed in self.events.separate(DisplayGroupID.Name):
+            found = True
             yield DisplayGroup(ed)
+        if found:
+            return
+
+        containers = list(self.events.get(DisplayGroupID.Container))
+        if len(containers) != 1:
+            return
+
+        names = _nested_group_names(bytes(containers[0].value))
+        if not names:
+            return
+
+        try:
+            events = [UnicodeEvent(DisplayGroupID.Name, name) for name in names]
+        except Exception:
+            return
+        for i, event in enumerate(events):
+            yield DisplayGroup(EventTree(init=[IndexedEvent(i, event)]))
 
     height = EventProp[int](RackID.WindowHeight)
     """Window height of the channel rack in the interface (in pixels)."""

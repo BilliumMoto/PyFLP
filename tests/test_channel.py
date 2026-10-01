@@ -3,12 +3,26 @@ from __future__ import annotations
 import pathlib
 from typing import TypeVar
 
-from pyflp._events import RGBA
+import pytest
+
+from pyflp._events import (
+    RGBA,
+    AnyEvent,
+    EventTree,
+    I32Event,
+    IndexedEvent,
+    U8Event,
+    U16Event,
+    UnicodeEvent,
+    UnknownDataEvent,
+)
 from pyflp.channel import (
     Automation,
     Channel,
+    ChannelID,
     ChannelRack,
     DeclickMode,
+    DisplayGroupID,
     FilterType,
     Instrument,
     Layer,
@@ -56,6 +70,70 @@ def test_channels(project: Project, rack: ChannelRack):
     assert rack.height == 646
     assert [group.name for group in rack.groups] == ["Audio", "Generators", "Unsorted"]
     assert not rack.swing
+
+
+def _group_name_event(name: str):
+    return UnicodeEvent(DisplayGroupID.Name, f"{name}\0".encode("utf-16-le"))
+
+
+def _group_container(*names: str, trailer: bytes = b"\x92\x02\x00\x00\x00"):
+    """Same layout as the observed FL 26 container: Name events + a DWORD event."""
+    return b"".join(bytes(_group_name_event(n)) for n in names) + trailer
+
+
+def _container_rack(*leading: AnyEvent, group_num: int = 2):
+    events = [
+        *leading,
+        U16Event(ChannelID.New, b"\x00\x00"),
+        U8Event(ChannelID.Type, b"\x00"),
+        I32Event(ChannelID.GroupNum, group_num.to_bytes(4, "little", signed=True)),
+    ]
+    return ChannelRack(EventTree(init=(IndexedEvent(r, e) for r, e in enumerate(events))))
+
+
+def test_groups_from_container():
+    payload = _group_container("Audio", "Automation", "Unsorted")
+    container = UnknownDataEvent(DisplayGroupID.Container, payload)
+    rack = _container_rack(container)
+
+    assert [group.name for group in rack.groups] == ["Audio", "Automation", "Unsorted"]
+    assert next(iter(rack)).group.name == "Unsorted"
+    assert bytes(container)[2:] == payload  # Container left untouched
+
+
+def test_top_level_groups_take_precedence_over_container():
+    container = UnknownDataEvent(DisplayGroupID.Container, _group_container("Other"))
+    rack = _container_rack(_group_name_event("Top"), container, group_num=0)
+
+    assert [group.name for group in rack.groups] == ["Top"]
+    assert next(iter(rack)).group.name == "Top"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(_group_container("Audio")[:-1], id="truncated"),
+        pytest.param(_group_container("Audio") + b"\xe7\x80", id="truncated-varint"),
+        pytest.param(_group_container("Audio") + b"\xac\x00\x00\x00\x00", id="version-framed"),
+        pytest.param(b"\xe7\x03abc", id="invalid-utf16"),
+        pytest.param(b"\x92\x02\x00\x00\x00", id="no-names"),
+        pytest.param(b"", id="empty"),
+    ],
+)
+def test_unusable_group_container_falls_through(payload: bytes):
+    rack = _container_rack(UnknownDataEvent(DisplayGroupID.Container, payload))
+
+    assert list(rack.groups) == []
+    assert next(iter(rack)).group.name is None
+
+
+def test_multiple_group_containers_fall_through():
+    containers = [
+        UnknownDataEvent(DisplayGroupID.Container, _group_container(n)) for n in ("A", "B")
+    ]
+    rack = _container_rack(*containers, group_num=0)
+
+    assert list(rack.groups) == []
 
 
 def test_automation_lfo():

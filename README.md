@@ -9,6 +9,8 @@ Built on [Meowrium's fork](https://github.com/Meowrium/PyFLP) of
   full markers and subevent framing to avoid silently accepting truncated data.
 - Fixes VST flag setters, including inverted flags, while preserving unrelated bits.
 - Fixes `fast_idle` and MIDI field writes so they preserve sibling fields and opaque data.
+- Reads channel display group names that some FL 26 projects nest in event `240`
+  instead of storing them as top-level events (read-only; the event stays opaque).
 
 Install this fork:
 
