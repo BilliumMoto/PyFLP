@@ -11,6 +11,8 @@ Built on [Meowrium's fork](https://github.com/Meowrium/PyFLP) of
 - Fixes `fast_idle` and MIDI field writes so they preserve sibling fields and opaque data.
 - Reads channel display group names that some FL 26 projects nest in event `240`
   instead of storing them as top-level events (read-only; the event stays opaque).
+- Runs on Python 3.12+; parsing and serialization verified identical on 3.10, 3.11,
+  3.12, and 3.14 (3.13 untested).
 
 Install this fork:
 

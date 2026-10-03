@@ -59,6 +59,20 @@ class _EventEnumMeta(enum.EnumMeta):
         """
         return obj in tuple(self)
 
+    def __call__(cls, value: Any, *args: Any, **kwds: Any) -> Any:
+        """Looks up IDs on :class:`EventEnum` itself, which has no members.
+
+        Python 3.12+ raises TypeError when an enum without members is called,
+        before :meth:`EventEnum._missing_` can resolve the ID. Adapted from
+        https://github.com/demberto/PyFLP/commit/9c240730ac2b0144fde0ecee57735d7aa12d7a1b.
+        """
+        if not args and not kwds and not cls._member_names_:
+            member = cls._missing_(value)
+            if member is None:
+                raise ValueError(f"{value!r} is not a valid {cls.__qualname__}")
+            return member
+        return super().__call__(value, *args, **kwds)
+
 
 class EventEnum(int, enum.Enum, metaclass=_EventEnumMeta):
     """IDs used by events.
